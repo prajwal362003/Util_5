@@ -1,0 +1,440 @@
+package com.sbi.zip.DAOImpl;
+
+import java.io.File;
+import java.nio.file.Files;
+import java.security.interfaces.RSAKey;
+import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import org.springframework.dao.DataAccessException;
+import org.springframework.dao.EmptyResultDataAccessException;
+import org.springframework.jdbc.core.DataClassRowMapper;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.stereotype.Repository;
+
+import com.sbi.zip.DAO.PerfiosDetailsDAO;
+import com.sbi.zip.dto.Customer;
+import com.sbi.zip.dto.CustomerCsvRecord;
+import com.sbi.zip.dto.SearchBean;
+import com.sbi.zip.dto.ZipCustomer;
+import com.sbi.zip.configuration.DMSProperties;
+import com.sbi.zip.configuration.DatabaseConfiguration;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Logger;
+
+import com.sbi.serverConfiguration.ServerConfiguration;
+
+@Repository
+public class PerfiosDetailsDAOImpl implements PerfiosDetailsDAO {
+
+	private static final JdbcTemplate jdbcTemplate = new JdbcTemplate(DatabaseConfiguration.getDataSource());
+
+	private static final Logger logger = (Logger) LogManager.getLogger(PerfiosDetailsDAO.class);
+
+	private static String sql = DMSProperties.getInstance().getProperty("UPDATE_CUSTOMER_DETAILS");
+
+	public static String outputPath = DMSProperties.getInstance().getProperty("OUTPUT_FOLD");
+	public static String cleanPath = DMSProperties.getInstance().getProperty("CLEAN_FOLD");
+
+	@Override
+	public
+	SearchBean getValuesFromDB(String cifNo) {
+		String sql = "SELECT CIF_NUMBER,ACCOUNT_NUMBER,BRANCH_CODE,CIF_STATUS FROM KYCUPDATE.KYC_PERFIOS_CUSTOMER_DETAILS WHERE CIF_NUMBER = ?";
+
+		try {
+
+			List<SearchBean> results = jdbcTemplate.query(sql, (rs, rowNum) -> {
+				logger.info("Row found for cif : {}", cifNo);
+				SearchBean sb = new SearchBean();
+				sb.setCif(rs.getString("CIF_NUMBER"));
+				sb.setAccountNumber(rs.getString("ACCOUNT_NUMBER"));
+				sb.setBranchCode(rs.getString("BRANCH_CODE"));
+				sb.setStatus(rs.getString("CIF_STATUS"));
+				return sb;
+			}, cifNo);
+
+			return results.stream().findFirst().orElse(new SearchBean());
+
+		} catch (DataAccessException e) {
+			logger.error("Database error occurred for CIF: {}", cifNo, e);
+			return new SearchBean();
+		}
+	}
+
+	@Override
+	public void updateData(String cif, String cif_status) {
+		String formattedCif = padWithZeros(cif, 17);
+		//String formattedAcc = padWithZeros(acc, 17);
+
+		try {
+			// ckyc_number, branch_code, kyc_update_date, zip_file, lcpc, cif_status, pan, modified_date, cif_pulled_date, zip_created_date, image_uploaded_date, categary, remark
+			int cnt = jdbcTemplate.update(sql,cif_status,formattedCif);
+
+			logger.info("Rows Updated : " + cnt);
+
+		} catch (Exception e) {
+			logger.error("Error occurred while updating", e);
+		}
+	}
+
+	private String padWithZeros(String input,int length) {
+		if (input == null) input = "";
+		StringBuilder sb = new StringBuilder(input);
+		while (sb.length() < length) {
+			sb.insert(0, "0");
+		}
+		return sb.toString();
+	}
+
+	@Override
+	public void updatestatus(SearchBean sb) {
+
+		String statusUpdateSql="Update kyc_perfios_customer_details set cif_status=?,zip_file=?, modified_date=sysdate where cif_number=?";
+		logger.info("statusUpdateSql   :  "+statusUpdateSql);
+		try {
+			int a=jdbcTemplate.update(statusUpdateSql,"ZC",sb.getZipFile(),sb.getCif());
+			logger.info("No of rows inserted :  "+a);
+		}catch(Exception e) {
+			logger.error("Exception  ",e);
+		}
+	}
+
+	@Override
+	public void moveFilesToCleanFolder(String fileName) {
+		try {
+			File sourceFile = new File(outputPath + File.separator + fileName);
+			File destinationFile = new File(cleanPath + File.separator + fileName);
+
+			Files.move(sourceFile.toPath(), destinationFile.toPath());
+
+			logger.info("Files moved successfully");
+		}catch(Exception e) {
+			logger.error("Error moving Files",e);
+		}
+	}
+
+	@Override
+	public int HistoryInsert(SearchBean sb) {
+		logger.info("HistoryInsert started");
+
+		StringUtils.leftPad(sb.getAccountNumber(), 17, "0");
+		String sql = DMSProperties.getInstance().getProperty("REKYC_HISTORY_DATA");
+		String server = ServerConfiguration.Hostname;
+
+		// INSERT INTO kycupdate.kyc_perfios_history (Cif_number, Account_number, Ckyc_number,  Branch_Code, ZIP_FILE, modified_date,modified_by,Remark,server) values (?,?,?,?,?,sysdate,?,?)]
+
+		try {
+			logger.info("History CIF = {}",sb.getCif());
+			logger.info("History ACC = {}",sb.getAccountNumber());
+			logger.info("History Remark = {}",sb.getRemark());
+
+			int rowsAffected = jdbcTemplate.update(sql, 
+					sb.getCif(), 
+					sb.getAccountNumber(), 
+					"UTIL_4_ZIP_CREATION",
+					sb.getRemark(),
+					server
+					);
+
+			logger.info("HistoryInsert successful. Rows affected: {}", rowsAffected);
+			return (rowsAffected > 0) ? rowsAffected : 1;
+
+		} catch (DataAccessException e) {
+			logger.error("Database error occurred while inserting history for CIF: {}", sb.getCif(), e);
+			return 0; 
+		} catch (Exception e) {
+			logger.error("Unexpected error occurred during HistoryInsert for CIF: {}", sb.getCif(), e);
+			return 0; 
+		}
+	}
+
+	@Override
+	public String checkStatusInPerfiosTable(String cifNumber) {
+		String sql = "SELECT CIF_STATUS FROM KYCUPDATE.KYC_PERFIOS_CUSTOMER_DETAILS WHERE CIF_NUMBER = ?";
+		try{
+			return jdbcTemplate.queryForObject(sql,  String.class,cifNumber);
+		}catch(Exception e) {
+			logger.error("Unexpected error occurred during checkStatusInPerfiosTable for CIF: "+e.getMessage());
+			return "";
+		}
+	}
+	String ckycStatusSet=DMSProperties.getInstance().getProperty("Ckyc.customer.status");
+	String kycStatusSet=DMSProperties.getInstance().getProperty("kyc.customer.status");
+
+	@Override
+	public boolean checkStatusInMAinTables(String cifNumber) {
+		String status="";
+
+		String ckycCustomerQuery="select status from ckyc.ckyc_customer_details where cif_number ='"+ cifNumber + "' "; //null/IP/SB/USB/S/SS/ASB/AUSB
+		logger.info("ckycCustomerQuery : "+ckycCustomerQuery);
+		try {
+			if(jdbcTemplate==null) {
+				logger.info("jdbcTemplate is null");
+			}
+			status=jdbcTemplate.queryForObject(ckycCustomerQuery, String.class);
+		}catch(EmptyResultDataAccessException e) {
+			logger.error("Exception : ",e.getMessage());
+			status="";
+		}catch(Exception e) {
+			logger.error("Exception : ",e);
+			status="";
+		}
+
+		List<String> ckycStatusList=Arrays.asList(ckycStatusSet.split(","));
+
+		if(status==null||status.isEmpty()||ckycStatusList.contains(status)){
+
+			List<String> kycStatusList=Arrays.asList(kycStatusSet.split(","));
+
+			String kycCustomerQuery="select status from kycupdate.kyc_customer_details where cif_number ='"+cifNumber+"'";//null/KIP/KSB/KUSB/KS/KSS/S/SS
+			logger.info("kycCustomerQuery : "+kycCustomerQuery);
+			try {
+				status=jdbcTemplate.queryForObject(kycCustomerQuery, String.class);
+			}catch(EmptyResultDataAccessException e) {
+				logger.error("Exception : ",e.getMessage());
+				status="";
+			}catch(Exception e) {
+				logger.error("Exception : ",e);;
+			}
+			if(status==null||status.isEmpty()||kycStatusList.contains(status))
+				return true;
+			else  
+				return false;
+		}
+		return false;
+	}
+
+	@Override
+	public Object fetchCbsDetail(String cifNumber) {
+		return null;
+	}
+
+	@Override
+	public String fetchOldestLotToProcess() {
+		String lotFileFullName="";
+
+		String sql ="""
+					select zip_file from(
+						select zip_file from kycupdate.kyc_perfios_customer_details where cif_status='ZP' order by modified_date
+					)t where rownum=1
+					""";
+
+		logger.info("Oldest Lot fetching query: " + sql);
+		try{
+			lotFileFullName=jdbcTemplate.queryForObject(sql, String.class);
+		}catch(Exception e) {
+			logger.error("Exception while fetching oldest lot : " + e);
+			e.printStackTrace();
+		}
+		return lotFileFullName;
+	}
+	
+	    
+	@Override
+	public String fetchNewLotToProcess(String lcpc) {
+
+	/*	String fetchLotSql="""
+				 select lot_count from(
+				 		select lot_count from kycupdate.Rekyc_perfios_lot_details where lcpc=? order by lot_count desc
+				 )t where rownum=1
+				""";*/
+		
+		String fetchLotSql="select max(To_number(trim(lot_count))) from kycupdate.Rekyc_perfios_lot_details where lcpc=?";
+		logger.info("fetchLotSql: " + fetchLotSql);
+		try {
+			return jdbcTemplate.queryForObject(fetchLotSql, String.class,lcpc);
+		}catch(Exception e) {
+			logger.error("Exception while fetching   lot : " + e);
+			return "0";
+		}
+	}  
+	
+	
+	@Override
+	public List<ZipCustomer> fetchCustomerInBatch(String lcpc) {
+		String fetchCustomersSql = """
+				 SELECT cif_number, branch_code, account_number
+				FROM (
+				    SELECT cif_number, branch_code, account_number, ROWNUM rn
+				    FROM kycupdate.kyc_perfios_customer_details
+				    WHERE cif_status = 'ZP' AND lcpc = ?
+				)
+				WHERE rn < 1000
+				""";
+		logger.info("fetchLotSql: " + fetchCustomersSql);
+		try {
+			return jdbcTemplate.query(fetchCustomersSql, new DataClassRowMapper<>(ZipCustomer.class), lcpc);
+		}catch(Exception e) {
+			logger.info("Exception : "+e);
+			return Collections.emptyList();
+		}
+	}
+
+	
+	@Override
+	public List<ZipCustomer> fetchLotCustomers(String lotNumber) {
+		String sql = "Select cif_number,Branch_code,Account_number "
+				+ "from kycupdate.kyc_perfios_customer_details where cif_status = 'ZP' and zip_file like '%"+lotNumber+"%' order by modified_date";
+		logger.info("lot fetching query : "+sql);
+		try {
+			//return jdbcTemplate.query(sql, new DataClassRowMapper<>(ZipCustomer.class),lotNumber);
+			return jdbcTemplate.query(sql, new DataClassRowMapper<>(ZipCustomer.class));
+
+		}catch(Exception ex) {
+			logger.info("Exception : "+ex);
+			return Collections.emptyList();
+		}
+	}
+
+
+
+	public CustomerCsvRecord getEntriesFromDB(String cifNumber,String accountNumber) {
+
+		logger.info("Inside getEntriesFromDB");
+		String sql1 ="""
+				SELECT CIF_NUMBER, ACCOUNT_NUMBER, DOB, APPLICANT_FIRST_NAME,APPLICANT_MIDDLE_NAME, APPLICANT_LAST_NAME
+				FROM KYCUPDATE.KYC_CUSTOMER_DETAILS WHERE CIF_NUMBER = ?
+				""";
+
+		logger.info("CustomerSQL: " + sql1);
+
+		try {
+			List<Map<String, Object>> customerList = jdbcTemplate.queryForList(sql1,cifNumber);
+			String cif = "";
+			String account = "";
+			String dob = "";
+			String firstName = "";
+			String middleName = "";
+			String lastName = "";
+
+			logger.info("customerList : "+customerList.size());
+			SimpleDateFormat sdf = new SimpleDateFormat("dd-MM-yyyy");
+			if (!customerList.isEmpty()) {
+				Map<String, Object> row = customerList.get(0);
+
+				cif = row.get("CIF_NUMBER") != null ? row.get("CIF_NUMBER").toString():"";
+				account = row.get("ACCOUNT_NUMBER") != null ? row.get("ACCOUNT_NUMBER").toString():accountNumber;
+				//dob = row.get("DOB") != null ? row.get("DOB").toString():"";
+				dob = row.get("DOB") != null ? sdf.format((Date) row.get("DOB")) : "";
+				firstName = row.get("APPLICANT_FIRST_NAME") != null ? row.get("APPLICANT_FIRST_NAME").toString():"";
+				middleName = row.get("APPLICANT_MIDDLE_NAME") != null ? row.get("APPLICANT_MIDDLE_NAME").toString():"";
+				lastName = row.get("APPLICANT_LAST_NAME") != null ? row.get("APPLICANT_LAST_NAME").toString():"";				
+				logger.info("Customer: {} {} {}, CIF: {}, Account: {}, DOB: {}",firstName, middleName, lastName, cif, account, dob);
+			}
+
+			String sql2 = "SELECT ADDRESS_LINE_1, ADDRESS_LINE_2, ADDRESS_LINE_3 FROM KYCUPDATE.KYC_ADDRESS_DETAILS WHERE FLAG_REGULAR_ADDRESS = 'R' and CIF_NUMBER_FK = ?";
+			logger.info("AddressSQL: " + sql2);
+
+			List<Map<String, Object>> addressList = jdbcTemplate.queryForList(sql2,cifNumber);
+			logger.info("addressList : "+addressList.size());
+			StringBuilder address = new StringBuilder();
+
+			if (!addressList.isEmpty()) {
+				Map<String, Object> row = addressList.get(0);
+				address.append(row.get("ADDRESS_LINE_1") != null ? row.get("ADDRESS_LINE_1").toString() :"");	
+				address.append(row.get("ADDRESS_LINE_2") != null ? row.get("ADDRESS_LINE_2").toString() :"");
+				address.append(row.get("ADDRESS_LINE_3") != null ? row.get("ADDRESS_LINE_3").toString() :"");
+				logger.info("Complete Address:"+address.toString());
+			}
+			return new CustomerCsvRecord(cif,account,dob,firstName,middleName,lastName,address.toString());
+
+		} catch (Exception e) {
+			logger.error("Database error", e);
+			return new CustomerCsvRecord("","","","","","","");
+		}
+	}
+	
+	@Override
+	public void updateZipStatus(List<CustomerCsvRecord> customerFolders, String lotName) {
+		String UpdateSql="update kycupdate.kyc_perfios_customer_details set cif_status='ZC',ZIP_CREATED_DATE = sysdate, REMARK='Zip Created succesfully', PERFIOS_LOTNAME='"+lotName+"' where cif_number=?";
+		List<Object[]> batchArgs=customerFolders.stream().map(p->new Object[] {p.cifNumber()}).toList();
+		logger.info("No of rows to be updated "+batchArgs.size());
+		try{
+			int[] a=jdbcTemplate.batchUpdate(UpdateSql,batchArgs);
+			logger.info("No of rows updated "+a.length);
+		}catch(Exception e) { 
+			logger.error("Exception while updating in batch", e);
+		}
+	}   
+	
+	@Override
+	public void insertHistory(List<CustomerCsvRecord> customerFolders, String lotName) {
+		String InsertSql="""
+						Insert into kycupdate.kyc_perfios_history (cif_number,Account_number,ZIP_FILE,modified_date,Remark,server,modified_by) 
+						values (?,?,?,sysdate,'Zip Created succesfully','','Zip_Creation_Utility')
+				""";
+		List<Object[]> batchArgs=customerFolders.stream().map(p->new Object[] {p.cifNumber(),p.accountNumber(),lotName,}).toList();
+		logger.info("No of rows to be updated "+batchArgs.size());
+		try{
+			int[] a=jdbcTemplate.batchUpdate(InsertSql,batchArgs);
+			logger.info("No of rows updated "+a.length);
+		}catch(Exception e) { 
+			logger.error("Exception while inserting in batch", e);
+		}
+	}
+
+	@Override
+	public void updateLotHistory(String lotName,String lotNo, String lcpc) {
+		String updateLotSql="""
+				Insert into kycupdate.Rekyc_perfios_lot_details (Perfios_lotFile,lot_count,lcpc,created_date,status) values (?,?,?,sysdate,?)
+				""";
+		try {
+			jdbcTemplate.update(updateLotSql,lotName,lotNo,lcpc,"Batch created");
+		}catch(Exception e) {
+			logger.error("Exception while inserting ", e);
+		}
+	} 
+}
+
+/*
+record CustomerData(String cif, String account, String dob, 
+		String firstName, String middleName, String lastName) {}
+// 2. Define the RowMapper (Lambda)
+RowMapper<CustomerData> mapper = (rs, rowNum) -> new CustomerData(
+		rs.getString("CIF_NUMBER"),
+		rs.getString("ACCOUNT_NUMBER"),
+		rs.getString("DOB"),
+		rs.getString("APPLICANT_FIRST_NAME"),
+		rs.getString("APPLICANT_MIDDLE_NAME"),
+		rs.getString("APPLICANT_LAST_NAME")
+		);
+
+// 3. Execute Query (Note the argument order: SQL, Mapper, Args)
+String sql = "SELECT CIF_NUMBER, ACCOUNT_NUMBER, DOB, APPLICANT_FIRST_NAME, APPLICANT_MIDDLE_NAME, APPLICANT_LAST_NAME FROM customers WHERE cif_number = ?";
+
+try {
+	// Correct signature: queryForObject(String sql, RowMapper<T> rowMapper, Object... args)
+	CustomerData customer = jdbcTemplate.queryForObject(sql, mapper, cifNumber);
+
+	logger.info("Customer: {} {} {}, CIF: {}, Account: {}, DOB: {}", 
+			customer.firstName(), customer.middleName(), customer.lastName(), 
+			customer.cif(), customer.account(), customer.dob());
+
+} catch (Exception e) {
+	// Handle case where no rows are found
+	logger.warn("No customer found for CIF: {}", cifNumber);
+}
+
+
+String sql = "SELECT CIF_NUMBER, ACCOUNT_NUMBER, DOB, APPLICANT_FIRST_NAME, APPLICANT_MIDDLE_NAME, APPLICANT_LAST_NAME FROM customers WHERE cif_number = ?";
+
+Optional<CustomerData> customerOpt = jdbcTemplate.query(sql, new Object[]{cifNumber}, (rs, rowNum) -> {
+    return new CustomerData(
+        rs.getString("CIF_NUMBER"),
+        rs.getString("ACCOUNT_NUMBER"),
+        rs.getString("DOB"),
+        rs.getString("APPLICANT_FIRST_NAME"),
+        rs.getString("APPLICANT_MIDDLE_NAME"),
+        rs.getString("APPLICANT_LAST_NAME")
+    );
+}).stream().findFirst();
+
+*/
