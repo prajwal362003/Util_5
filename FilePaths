@@ -1,0 +1,21 @@
+package com.sbi.constants;
+
+import com.sbi.zip.configuration.DMSProperties;
+
+public class FilePaths {
+	
+	public static String inputFolder = DMSProperties.getInstance().getProperty("INPUT_FOLD");
+	public static String BackupFolder = DMSProperties.getInstance().getProperty("BKP_FOLD");
+	public static String ExceptionFolder = DMSProperties.getInstance().getProperty("EXCEPTION_FOLD");
+	public static String outputFolder = DMSProperties.getInstance().getProperty("OUTPUT_FOLD");
+	public static String cleanFolder = DMSProperties.getInstance().getProperty("CLEAN_FOLD");
+	public static String processingPath = DMSProperties.getInstance().getProperty("PROCESSING_PATH");
+
+	public static int Cleancap = Integer.parseInt(DMSProperties.getInstance().getProperty("CLEAN_CAPACITY"));
+	public static int zipcap = Integer.parseInt(DMSProperties.getInstance().getProperty("ZIP_CAPACITY"));
+	public static int lotcap = Integer.parseInt(DMSProperties.getInstance().getProperty("LOT_CAPACITY"));
+	
+	public static String url = DMSProperties.getInstance().getProperty("DB_URL");
+	public static String username = DMSProperties.getInstance().getProperty("DB_USER");
+	public static String password = DMSProperties.getInstance().getProperty("DB_PASSWORD");
+}
