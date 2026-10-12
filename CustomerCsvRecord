@@ -1,0 +1,5 @@
+package com.sbi.zip.dto;
+
+public record CustomerCsvRecord(String cifNumber, String accountNumber, String dateOfBirth, String firstName, String middleName, String lastName, String address) {
+	
+}
